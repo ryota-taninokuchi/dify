@@ -152,6 +152,7 @@ class AgentLog(BaseModel):
         TOTAL_TOKENS = "total_tokens"
         PROVIDER = "provider"
         CURRENCY = "currency"
+        LLM_USAGE = "llm_usage"
 
     class LogStatus(StrEnum):
         START = "start"

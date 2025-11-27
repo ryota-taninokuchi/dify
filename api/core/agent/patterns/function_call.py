@@ -16,6 +16,7 @@ from core.model_runtime.entities import (
     PromptMessageTool,
     ToolPromptMessage,
 )
+from core.tools.entities.tool_entities import ToolInvokeMeta
 
 from .base import AgentPattern
 
@@ -38,7 +39,7 @@ class FunctionCallStrategy(AgentPattern):
         iteration_step: int = 1
         max_iterations: int = self.max_iterations + 1
         function_call_state: bool = True
-        llm_usage: dict[str, LLMUsage] = {"usage": LLMUsage.empty_usage()}
+        total_usage: dict[str, LLMUsage | None] = {"usage": None}
         messages: list[PromptMessage] = list(prompt_messages)  # Create mutable copy
         final_text: str = ""
         finish_reason: str | None = None
@@ -65,6 +66,9 @@ class FunctionCallStrategy(AgentPattern):
             )
             yield model_log
 
+            # Track usage for this round only
+            round_usage: dict[str, LLMUsage | None] = {"usage": None}
+
             # Invoke model
             chunks: Union[Generator[LLMResultChunk, None, None], LLMResult] = self.model_instance.invoke_llm(
                 prompt_messages=messages,
@@ -78,9 +82,14 @@ class FunctionCallStrategy(AgentPattern):
 
             # Process response
             tool_calls, response_content, chunk_finish_reason = yield from self._handle_chunks(
-                chunks, llm_usage, model_log
+                chunks, round_usage, model_log
             )
             messages.append(self._create_assistant_message(response_content, tool_calls))
+
+            # Accumulate to total usage
+            round_usage_value = round_usage.get("usage")
+            if round_usage_value:
+                self._accumulate_usage(total_usage, round_usage_value)
 
             # Update final text if no tool calls (this is likely the final answer)
             if not tool_calls:
@@ -91,38 +100,46 @@ class FunctionCallStrategy(AgentPattern):
                 finish_reason = chunk_finish_reason
 
             # Process tool calls
+            tool_outputs: dict[str, str] = {}
             if tool_calls:
                 function_call_state = True
                 # Execute tools
                 for tool_call_id, tool_name, tool_args in tool_calls:
-                    response_content, tool_files = yield from self._handle_tool_call(
+                    tool_response, tool_files, _ = yield from self._handle_tool_call(
                         tool_name, tool_args, tool_call_id, messages, round_log
                     )
+                    tool_outputs[tool_name] = tool_response
                     # Track files produced by tools
                     output_files.extend(tool_files)
             yield self._finish_log(
                 round_log,
                 data={
                     "llm_result": response_content,
-                    "tool_result": {
-                        "tool_name": tool_calls,
-                        "tool_input": [{"name": tool_call[1], "args": tool_call[2]} for tool_call in tool_calls],
-                        "tool_output": tool_calls,
-                    },
+                    "tool_calls": [
+                        {"name": tc[1], "args": tc[2], "output": tool_outputs.get(tc[1], "")} for tc in tool_calls
+                    ]
+                    if tool_calls
+                    else [],
+                    "final_answer": final_text if not function_call_state else None,
                 },
-                usage=llm_usage["usage"],
+                usage=round_usage.get("usage"),
             )
             iteration_step += 1
 
         # Return final result
         from core.agent.entities import AgentResult
 
-        return AgentResult(text=final_text, files=output_files, usage=llm_usage["usage"], finish_reason=finish_reason)
+        return AgentResult(
+            text=final_text,
+            files=output_files,
+            usage=total_usage.get("usage") or LLMUsage.empty_usage(),
+            finish_reason=finish_reason,
+        )
 
     def _handle_chunks(
         self,
         chunks: Union[Generator[LLMResultChunk, None, None], LLMResult],
-        llm_usage: dict[str, LLMUsage],
+        llm_usage: dict[str, LLMUsage | None],
         start_log: AgentLog,
     ) -> Generator[
         LLMResultChunk | AgentLog,
@@ -180,7 +197,7 @@ class FunctionCallStrategy(AgentPattern):
             data={
                 "result": response_content,
             },
-            usage=llm_usage["usage"],
+            usage=llm_usage.get("usage"),
         )
         return tool_calls, response_content, finish_reason
 
@@ -209,8 +226,8 @@ class FunctionCallStrategy(AgentPattern):
         tool_call_id: str,
         messages: list[PromptMessage],
         round_log: AgentLog,
-    ) -> Generator[AgentLog, None, tuple[str, list[File]]]:
-        """Handle a single tool call and return response with files."""
+    ) -> Generator[AgentLog, None, tuple[str, list[File], ToolInvokeMeta | None]]:
+        """Handle a single tool call and return response with files and meta."""
         # Find tool
         tool_instance = self._find_tool_by_name(tool_name)
         if not tool_instance:
@@ -231,7 +248,7 @@ class FunctionCallStrategy(AgentPattern):
         yield tool_call_log
 
         # Invoke tool using base class method
-        response_content, tool_files = self._invoke_tool(tool_instance, tool_args, tool_name)
+        response_content, tool_files, tool_invoke_meta = self._invoke_tool(tool_instance, tool_args, tool_name)
 
         yield self._finish_log(
             tool_call_log,
@@ -239,6 +256,7 @@ class FunctionCallStrategy(AgentPattern):
                 **tool_call_log.data,
                 "output": response_content,
                 "files": len(tool_files),
+                "meta": tool_invoke_meta.to_dict() if tool_invoke_meta else None,
             },
         )
         final_content = response_content or "Tool executed successfully"
@@ -250,4 +268,4 @@ class FunctionCallStrategy(AgentPattern):
                 name=tool_name,
             )
         )
-        return response_content, tool_files
+        return response_content, tool_files, tool_invoke_meta

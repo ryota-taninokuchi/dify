@@ -4,9 +4,10 @@ import json
 from collections.abc import Generator
 from typing import Any, Union
 
-from core.agent.entities import AgentLog, AgentResult, AgentScratchpadUnit
+from core.agent.entities import AgentLog, AgentResult, AgentScratchpadUnit, ExecutionContext
 from core.agent.output_parser.cot_output_parser import CotAgentOutputParser
 from core.file import File
+from core.model_manager import ModelInstance
 from core.model_runtime.entities import (
     AssistantPromptMessage,
     LLMResult,
@@ -15,12 +16,36 @@ from core.model_runtime.entities import (
     PromptMessage,
     SystemPromptMessage,
 )
+from core.tools.__base.tool import Tool
 
-from .base import AgentPattern
+from .base import AgentPattern, ToolInvokeHook
 
 
 class ReActStrategy(AgentPattern):
     """ReAct strategy using reasoning and acting approach."""
+
+    def __init__(
+        self,
+        model_instance: ModelInstance,
+        tools: list[Tool],
+        context: ExecutionContext,
+        max_iterations: int = 10,
+        workflow_call_depth: int = 0,
+        files: list[File] = [],
+        tool_invoke_hook: ToolInvokeHook | None = None,
+        instruction: str = "",
+    ):
+        """Initialize the ReAct strategy with instruction support."""
+        super().__init__(
+            model_instance=model_instance,
+            tools=tools,
+            context=context,
+            max_iterations=max_iterations,
+            workflow_call_depth=workflow_call_depth,
+            files=files,
+            tool_invoke_hook=tool_invoke_hook,
+        )
+        self.instruction = instruction
 
     def run(
         self,
@@ -35,7 +60,7 @@ class ReActStrategy(AgentPattern):
         iteration_step: int = 1
         max_iterations: int = self.max_iterations + 1
         react_state: bool = True
-        llm_usage: dict[str, Any] = {"usage": None}
+        total_usage: dict[str, Any] = {"usage": None}
         output_files: list[File] = []  # Track files produced by tools
         final_text: str = ""
         finish_reason: str | None = None
@@ -56,7 +81,9 @@ class ReActStrategy(AgentPattern):
 
             # Build prompt with/without tools based on iteration
             include_tools = iteration_step < max_iterations
-            current_messages = self._build_prompt_with_react_format(prompt_messages, agent_scratchpad, include_tools)
+            current_messages = self._build_prompt_with_react_format(
+                prompt_messages, agent_scratchpad, include_tools, self.instruction
+            )
 
             model_log = self._create_log(
                 label=f"{self.model_instance.model} Thought",
@@ -68,6 +95,9 @@ class ReActStrategy(AgentPattern):
                 },
             )
             yield model_log
+
+            # Track usage for this round only
+            round_usage: dict[str, Any] = {"usage": None}
 
             # Use current messages directly (files are handled by base class if needed)
             messages_to_use = current_messages
@@ -84,9 +114,14 @@ class ReActStrategy(AgentPattern):
 
             # Process response
             scratchpad, chunk_finish_reason = yield from self._handle_chunks(
-                chunks, llm_usage, model_log, current_messages
+                chunks, round_usage, model_log, current_messages
             )
             agent_scratchpad.append(scratchpad)
+
+            # Accumulate to total usage
+            round_usage_value = round_usage.get("usage")
+            if round_usage_value:
+                self._accumulate_usage(total_usage, round_usage_value)
 
             # Update finish reason
             if chunk_finish_reason:
@@ -124,7 +159,7 @@ class ReActStrategy(AgentPattern):
                     "observation": scratchpad.observation or None,
                     "final_answer": final_text if not react_state else None,
                 },
-                usage=llm_usage.get("usage"),
+                usage=round_usage.get("usage"),
             )
             iteration_step += 1
 
@@ -133,7 +168,7 @@ class ReActStrategy(AgentPattern):
         from core.agent.entities import AgentResult
 
         return AgentResult(
-            text=final_text, files=output_files, usage=llm_usage.get("usage"), finish_reason=finish_reason
+            text=final_text, files=output_files, usage=total_usage.get("usage"), finish_reason=finish_reason
         )
 
     def _build_prompt_with_react_format(
@@ -141,6 +176,7 @@ class ReActStrategy(AgentPattern):
         original_messages: list[PromptMessage],
         agent_scratchpad: list[AgentScratchpadUnit],
         include_tools: bool = True,
+        instruction: str = "",
     ) -> list[PromptMessage]:
         """Build prompt messages with ReAct format."""
         # Copy messages to avoid modifying original
@@ -173,6 +209,7 @@ class ReActStrategy(AgentPattern):
                 # Replace placeholders in the existing system prompt
                 updated_content = msg.content
                 assert isinstance(updated_content, str)
+                updated_content = updated_content.replace("{{instruction}}", instruction)
                 updated_content = updated_content.replace("{{tools}}", tools_str)
                 updated_content = updated_content.replace("{{tool_names}}", tool_names_str)
 
@@ -344,7 +381,7 @@ class ReActStrategy(AgentPattern):
             tool_args_dict = tool_args
 
         # Invoke tool using base class method
-        response_content, tool_files = self._invoke_tool(tool_instance, tool_args_dict, tool_name)
+        response_content, tool_files, tool_invoke_meta = self._invoke_tool(tool_instance, tool_args_dict, tool_name)
 
         # Finish tool log
         yield self._finish_log(
@@ -353,6 +390,7 @@ class ReActStrategy(AgentPattern):
                 **tool_log.data,
                 "output": response_content,
                 "files": len(tool_files),
+                "meta": tool_invoke_meta.to_dict() if tool_invoke_meta else None,
             },
         )
 

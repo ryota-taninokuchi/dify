@@ -4,7 +4,7 @@ import json
 import re
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -24,8 +24,12 @@ from core.model_runtime.entities import (
 from core.model_runtime.entities.llm_entities import LLMUsage
 from core.model_runtime.entities.message_entities import TextPromptMessageContent
 from core.tools.__base.tool import Tool
-from core.tools.entities.tool_entities import ToolInvokeMessage
+from core.tools.entities.tool_entities import ToolInvokeMessage, ToolInvokeMeta
 from core.tools.tool_engine import DifyWorkflowCallbackHandler, ToolEngine
+
+# Type alias for tool invoke hook
+# Returns: (response_content, message_file_ids, tool_invoke_meta)
+ToolInvokeHook = Callable[[Tool, dict[str, Any], str], tuple[str, list[str], ToolInvokeMeta]]
 
 
 class AgentPattern(ABC):
@@ -39,6 +43,7 @@ class AgentPattern(ABC):
         max_iterations: int = 10,
         workflow_call_depth: int = 0,
         files: list[File] = [],
+        tool_invoke_hook: ToolInvokeHook | None = None,
     ):
         """Initialize the agent strategy."""
         self.model_instance = model_instance
@@ -47,6 +52,7 @@ class AgentPattern(ABC):
         self.max_iterations = min(max_iterations, 99)  # Cap at 99 iterations
         self.workflow_call_depth = workflow_call_depth
         self.files: list[File] = files
+        self.tool_invoke_hook = tool_invoke_hook
 
     @abstractmethod
     def run(
@@ -62,7 +68,21 @@ class AgentPattern(ABC):
     def _accumulate_usage(self, total_usage: dict[str, Any], delta_usage: LLMUsage) -> None:
         """Accumulate LLM usage statistics."""
         if not total_usage.get("usage"):
-            total_usage["usage"] = delta_usage
+            # Create a copy to avoid modifying the original
+            total_usage["usage"] = LLMUsage(
+                prompt_tokens=delta_usage.prompt_tokens,
+                prompt_unit_price=delta_usage.prompt_unit_price,
+                prompt_price_unit=delta_usage.prompt_price_unit,
+                prompt_price=delta_usage.prompt_price,
+                completion_tokens=delta_usage.completion_tokens,
+                completion_unit_price=delta_usage.completion_unit_price,
+                completion_price_unit=delta_usage.completion_price_unit,
+                completion_price=delta_usage.completion_price,
+                total_tokens=delta_usage.total_tokens,
+                total_price=delta_usage.total_price,
+                currency=delta_usage.currency,
+                latency=delta_usage.latency,
+            )
         else:
             current: LLMUsage = total_usage["usage"]
             current.prompt_tokens += delta_usage.prompt_tokens
@@ -188,6 +208,7 @@ class AgentPattern(ABC):
                     AgentLog.LogMetadata.TOTAL_PRICE: usage.total_price,
                     AgentLog.LogMetadata.CURRENCY: usage.currency,
                     AgentLog.LogMetadata.TOTAL_TOKENS: usage.total_tokens,
+                    AgentLog.LogMetadata.LLM_USAGE: usage,
                 }
             )
 
@@ -282,7 +303,7 @@ class AgentPattern(ABC):
         tool_instance: Tool,
         tool_args: dict[str, Any],
         tool_name: str,
-    ) -> tuple[str, list[File]]:
+    ) -> tuple[str, list[File], ToolInvokeMeta | None]:
         """
         Invoke a tool and collect its response.
 
@@ -292,12 +313,19 @@ class AgentPattern(ABC):
             tool_name: Name of the tool
 
         Returns:
-            Tuple of (response_content, tool_files)
+            Tuple of (response_content, tool_files, tool_invoke_meta)
         """
         # Process tool_args to replace file references with actual File objects
         tool_args = self._replace_file_references(tool_args)
 
-        # Invoke tool
+        # If a tool invoke hook is set, use it instead of generic_invoke
+        if self.tool_invoke_hook:
+            response_content, _, tool_invoke_meta = self.tool_invoke_hook(tool_instance, tool_args, tool_name)
+            # Note: message_file_ids are stored in DB, we don't convert them to File objects here
+            # The caller (AgentAppRunner) handles file publishing
+            return response_content, [], tool_invoke_meta
+
+        # Default: use generic_invoke for workflow scenarios
         tool_response = ToolEngine().generic_invoke(
             tool=tool_instance,
             tool_parameters=tool_args,
@@ -389,7 +417,7 @@ class AgentPattern(ABC):
                             # File is tool output
                             tool_files.append(file)
 
-        return response_content, tool_files
+        return response_content, tool_files, None
 
     def _find_tool_by_name(self, tool_name: str) -> Tool | None:
         """Find a tool instance by its name."""
