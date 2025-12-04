@@ -522,6 +522,7 @@ const translation = {
         output: 'Generate content',
         reasoning_content: 'Reasoning Content',
         usage: 'Model Usage Information',
+        generation: 'Generation details including reasoning, tool calls and their sequence',
       },
       singleRun: {
         variable: 'Variable',

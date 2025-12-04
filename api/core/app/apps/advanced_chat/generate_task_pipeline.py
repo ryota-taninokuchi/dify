@@ -70,7 +70,7 @@ from core.workflow.runtime import GraphRuntimeState
 from core.workflow.system_variable import SystemVariable
 from extensions.ext_database import db
 from libs.datetime_utils import naive_utc_now
-from models import Account, Conversation, EndUser, Message, MessageFile
+from models import Account, Conversation, EndUser, LLMGenerationDetail, Message, MessageFile
 from models.enums import CreatorUserRole
 from models.workflow import Workflow
 
@@ -834,6 +834,75 @@ class AdvancedChatAppGenerateTaskPipeline(GraphRuntimeStateSupport):
             for file in self._recorded_files
         ]
         session.add_all(message_files)
+
+        # Save merged LLM generation detail from all LLM nodes
+        self._save_generation_detail(session=session, message=message)
+
+    def _save_generation_detail(self, *, session: Session, message: Message) -> None:
+        """
+        Save merged LLM generation detail for Chatflow.
+        Merges generation details from all LLM nodes in the workflow.
+        """
+        if not message.workflow_run_id:
+            return
+
+        # Query all LLM generation details for this workflow run
+        generation_details = (
+            session.query(LLMGenerationDetail)
+            .filter_by(workflow_run_id=message.workflow_run_id)
+            .all()
+        )
+
+        if not generation_details:
+            return
+
+        # Merge all generation details
+        merged_reasoning: list[str] = []
+        merged_tool_calls: list[dict] = []
+        merged_sequence: list[dict] = []
+        content_offset = 0
+
+        for detail in generation_details:
+            # Add content segment for this node's contribution
+            # Note: In a more sophisticated implementation, we could track
+            # which parts of the answer came from which LLM node
+            reasoning_list = detail.reasoning_content_list
+            tool_calls_list = detail.tool_calls_list
+
+            for reasoning in reasoning_list:
+                merged_reasoning.append(reasoning)
+                merged_sequence.append({"type": "reasoning", "index": len(merged_reasoning) - 1})
+
+            for tool_call in tool_calls_list:
+                merged_tool_calls.append(tool_call)
+                merged_sequence.append({"type": "tool_call", "index": len(merged_tool_calls) - 1})
+
+        # Only save if there's meaningful data
+        if not merged_reasoning and not merged_tool_calls:
+            return
+
+        # Add content segment for the final answer
+        answer = message.answer or ""
+        if answer:
+            merged_sequence.insert(0, {"type": "content", "start": 0, "end": len(answer)})
+
+        # Check if generation detail already exists for this message
+        existing = session.query(LLMGenerationDetail).filter_by(message_id=message.id).first()
+
+        if existing:
+            existing.reasoning_content = json.dumps(merged_reasoning) if merged_reasoning else None
+            existing.tool_calls = json.dumps(merged_tool_calls) if merged_tool_calls else None
+            existing.sequence = json.dumps(merged_sequence) if merged_sequence else None
+        else:
+            generation_detail = LLMGenerationDetail(
+                tenant_id=self._application_generate_entity.app_config.tenant_id,
+                app_id=self._application_generate_entity.app_config.app_id,
+                message_id=message.id,
+                reasoning_content=json.dumps(merged_reasoning) if merged_reasoning else None,
+                tool_calls=json.dumps(merged_tool_calls) if merged_tool_calls else None,
+                sequence=json.dumps(merged_sequence) if merged_sequence else None,
+            )
+            session.add(generation_detail)
 
     def _seed_graph_runtime_state_from_queue_manager(self) -> None:
         """Bootstrap the cached runtime state from the queue manager when present."""

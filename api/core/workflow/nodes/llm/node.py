@@ -341,6 +341,11 @@ class LLMNode(Node):
                 "reasoning_content": reasoning_content,
                 "usage": jsonable_encoder(usage),
                 "finish_reason": finish_reason,
+                "generation": {
+                    "content": clean_text,
+                    "reasoning_content": [reasoning_content] if reasoning_content else [],
+                    "tool_calls": [],
+                },
             }
             if structured_output:
                 outputs["structured_output"] = structured_output.structured_output
@@ -1561,6 +1566,18 @@ class LLMNode(Node):
             is_final=True,
         )
 
+        # Build generation field from agent_logs
+        tool_calls_for_generation = []
+        for log in agent_logs:
+            if log.label == "Tool Call":
+                tool_call_data = {
+                    "id": log.data.get("tool_call_id", ""),
+                    "name": log.data.get("tool_name", ""),
+                    "arguments": json.dumps(log.data.get("tool_args", {})),
+                    "result": log.data.get("output", ""),
+                }
+                tool_calls_for_generation.append(tool_call_data)
+
         # Complete with results
         yield StreamCompletedEvent(
             node_run_result=NodeRunResult(
@@ -1570,6 +1587,11 @@ class LLMNode(Node):
                     "files": ArrayFileSegment(value=files),
                     "usage": jsonable_encoder(usage),
                     "finish_reason": finish_reason,
+                    "generation": {
+                        "reasoning_content": [],
+                        "tool_calls": tool_calls_for_generation,
+                        "sequence": [],
+                    },
                 },
                 metadata={
                     WorkflowNodeExecutionMetadataKey.AGENT_LOG: agent_logs,

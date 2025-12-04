@@ -324,6 +324,11 @@ const Panel: FC<NodePanelProps<LLMNodeType>> = ({
             type='object'
             description={t(`${i18nPrefix}.outputVars.usage`)}
           />
+          <VarItem
+            name='generation'
+            type='object'
+            description={t(`${i18nPrefix}.outputVars.generation`)}
+          />
           {inputs.structured_output_enabled && (
             <>
               <Split className='mt-3' />

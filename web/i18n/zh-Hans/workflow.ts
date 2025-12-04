@@ -522,6 +522,7 @@ const translation = {
         output: '生成内容',
         reasoning_content: '推理内容',
         usage: '模型用量信息',
+        generation: '生成详情，包含推理内容、工具调用及其顺序',
       },
       singleRun: {
         variable: '变量',
