@@ -492,12 +492,14 @@ class SQLAlchemyWorkflowNodeExecutionRepository(WorkflowNodeExecutionRepository)
                 # Each log entry has label, data, status, etc.
                 log_data = log.data if hasattr(log, "data") else log.get("data", {})
                 if log_data.get("tool_name"):
-                    tool_calls_list.append({
-                        "id": log_data.get("tool_call_id", ""),
-                        "name": log_data.get("tool_name", ""),
-                        "arguments": json.dumps(log_data.get("tool_args", {})),
-                        "result": str(log_data.get("output", "")),
-                    })
+                    tool_calls_list.append(
+                        {
+                            "id": log_data.get("tool_call_id", ""),
+                            "name": log_data.get("tool_name", ""),
+                            "arguments": json.dumps(log_data.get("tool_args", {})),
+                            "result": str(log_data.get("output", "")),
+                        }
+                    )
 
         # Build sequence based on content, reasoning, and tool_calls
         sequence: list[dict] = []
@@ -509,7 +511,7 @@ class SQLAlchemyWorkflowNodeExecutionRepository(WorkflowNodeExecutionRepository)
             sequence.append({"type": "content", "start": 0, "end": len(text)})
         for i, _ in enumerate(reasoning_list):
             sequence.append({"type": "reasoning", "index": i})
-        for i, _ in enumerate(tool_calls_list):
+        for i in range(len(tool_calls_list)):
             sequence.append({"type": "tool_call", "index": i})
 
         # Only save if there's meaningful generation detail
@@ -517,10 +519,14 @@ class SQLAlchemyWorkflowNodeExecutionRepository(WorkflowNodeExecutionRepository)
             return
 
         # Check if generation detail already exists for this node execution
-        existing = session.query(LLMGenerationDetail).filter_by(
-            workflow_run_id=execution.workflow_execution_id,
-            node_id=execution.node_id,
-        ).first()
+        existing = (
+            session.query(LLMGenerationDetail)
+            .filter_by(
+                workflow_run_id=execution.workflow_execution_id,
+                node_id=execution.node_id,
+            )
+            .first()
+        )
 
         if existing:
             # Update existing record

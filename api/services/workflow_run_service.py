@@ -1,5 +1,4 @@
 import threading
-from collections.abc import Sequence
 from typing import Any
 
 from sqlalchemy import Engine
@@ -12,7 +11,6 @@ from models import (
     Account,
     App,
     EndUser,
-    WorkflowNodeExecutionModel,
     WorkflowRun,
     WorkflowRunTriggeredFrom,
 )
