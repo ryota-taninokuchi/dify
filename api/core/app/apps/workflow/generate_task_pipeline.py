@@ -259,6 +259,10 @@ class WorkflowAppGenerateTaskPipeline(GraphRuntimeStateSupport):
 
         run_id = self._extract_workflow_run_id(runtime_state)
         self._workflow_execution_id = run_id
+
+        with self._database_session() as session:
+            self._save_workflow_app_log(session=session, workflow_run_id=self._workflow_execution_id)
+
         start_resp = self._workflow_response_converter.workflow_start_to_stream_response(
             task_id=self._application_generate_entity.task_id,
             workflow_run_id=run_id,
@@ -415,9 +419,6 @@ class WorkflowAppGenerateTaskPipeline(GraphRuntimeStateSupport):
             graph_runtime_state=validated_state,
         )
 
-        with self._database_session() as session:
-            self._save_workflow_app_log(session=session, workflow_run_id=self._workflow_execution_id)
-
         yield workflow_finish_resp
 
     def _handle_workflow_partial_success_event(
@@ -438,10 +439,6 @@ class WorkflowAppGenerateTaskPipeline(GraphRuntimeStateSupport):
             graph_runtime_state=validated_state,
             exceptions_count=event.exceptions_count,
         )
-
-        with self._database_session() as session:
-            self._save_workflow_app_log(session=session, workflow_run_id=self._workflow_execution_id)
-
         yield workflow_finish_resp
 
     def _handle_workflow_failed_and_stop_events(
@@ -472,10 +469,6 @@ class WorkflowAppGenerateTaskPipeline(GraphRuntimeStateSupport):
             error=error,
             exceptions_count=exceptions_count,
         )
-
-        with self._database_session() as session:
-            self._save_workflow_app_log(session=session, workflow_run_id=self._workflow_execution_id)
-
         yield workflow_finish_resp
 
     def _handle_text_chunk_event(
@@ -666,7 +659,6 @@ class WorkflowAppGenerateTaskPipeline(GraphRuntimeStateSupport):
         )
 
         session.add(workflow_app_log)
-        session.commit()
 
     def _text_chunk_to_stream_response(
         self,
