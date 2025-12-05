@@ -67,4 +67,3 @@ class LLMGenerationDetailData(BaseModel):
             "tool_calls": [tc.model_dump() for tc in self.tool_calls],
             "sequence": [seg.model_dump() for seg in self.sequence],
         }
-

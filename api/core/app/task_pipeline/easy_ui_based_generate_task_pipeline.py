@@ -433,9 +433,7 @@ class EasyUIBasedGenerateTaskPipeline(BasedGenerateTaskPipeline):
             application_generate_entity=self._application_generate_entity,
         )
 
-    def _save_generation_detail(
-        self, *, session: Session, message: Message, llm_result: LLMResult
-    ) -> None:
+    def _save_generation_detail(self, *, session: Session, message: Message, llm_result: LLMResult) -> None:
         """
         Save LLM generation detail for Completion/Chat/Agent-Chat applications.
         For Agent-Chat, also merges MessageAgentThought records.
@@ -466,11 +464,13 @@ class EasyUIBasedGenerateTaskPipeline(BasedGenerateTaskPipeline):
 
                 # Add tool calls
                 if thought.tool:
-                    tool_calls_list.append({
-                        "name": thought.tool,
-                        "arguments": thought.tool_input or "",
-                        "result": thought.observation or "",
-                    })
+                    tool_calls_list.append(
+                        {
+                            "name": thought.tool,
+                            "arguments": thought.tool_input or "",
+                            "result": thought.observation or "",
+                        }
+                    )
                     sequence.append({"type": "tool_call", "index": len(tool_calls_list) - 1})
 
                 # Add answer content if present

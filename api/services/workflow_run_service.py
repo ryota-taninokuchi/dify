@@ -165,5 +165,5 @@ class WorkflowRunService:
             generation_service = LLMGenerationService(session)
             return generation_service.attach_generation_details_to_node_executions(
                 node_executions=node_executions,
-            workflow_run_id=run_id,
-        )
+                workflow_run_id=run_id,
+            )
